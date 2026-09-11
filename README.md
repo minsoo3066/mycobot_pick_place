@@ -1,8 +1,8 @@
 # myCobot 280-Pi Pick & Place
 
-Elephant Robotics **myCobot 280-Pi**에서 `pymycobot`을 사용해 매트 위의 물체를 집고 다른 위치로 옮기는 Pick & Place 동작을 단계별로 실습한 저장소입니다.
+Elephant Robotics **myCobot 280-Pi**에서 `pymycobot`을 사용해 매트 위의 물체를 집고 다른 위치로 옮기는 Pick & Place 동작을 단계별로 구현하는 프로젝트입니다.
 
-현재 단계에서는 카메라 인식보다 먼저 **좌표 기반 Pick & Place 동작을 안정적으로 구현**하는 것을 목표로 합니다. 이후 매트 UI에서 출발점과 도착점을 선택하고, 최종적으로 카메라 기반 물체 인식까지 확장할 예정입니다.
+현재는 **400 × 400 mm 작업 매트 UI에서 START / GOAL을 선택하고, HOME 경유 Pick & Place를 실제 로봇에 실행하는 단계까지 완료**했습니다. 이후 임의 좌표에 적용할 Z / orientation 정책을 정리하고, ROS 2 Action과 카메라 기반 물체 인식으로 확장할 예정입니다.
 
 > 아래 좌표와 HOME 자세는 현재 실습 장비의 설치 상태에서 측정한 값입니다. 다른 장비나 설치 자세에서는 그대로 사용하면 안 됩니다.
 
@@ -13,19 +13,18 @@ Elephant Robotics **myCobot 280-Pi**에서 `pymycobot`을 사용해 매트 위�
 - Robot control: `pymycobot`
 - Work mat: 400 mm × 400 mm
 - Robot base: 매트 중앙에 배치
+- Project path: `~/mycobot_pick_place`
 
 ## 프로젝트 목표
 
-1. 로봇 현재 상태 확인
-2. HOME 자세 정의
-3. Pick / Place 좌표 직접 기록
-4. 그리퍼 Open / Close 제어
-5. 안전 높이를 이용한 수직 접근 및 상승
-6. `HOME -> Pick -> HOME -> Place -> HOME` 전체 동작 구현
-7. 로봇 X/Y 좌표 방향 확인
-8. 매트 UI에서 START / GOAL 선택
-9. UI 좌표를 로봇 좌표로 변환
-10. 이후 카메라 기반 물체 인식으로 확장
+1. HOME / Pick / Place 기본 동작 구현
+2. 안전 높이를 이용한 수직 접근 및 상승
+3. `HOME -> Pick -> HOME -> Place -> HOME` 경로 구성
+4. 매트 UI에서 START / GOAL 선택
+5. UI pixel을 Robot X/Y로 변환
+6. 로봇 베이스 DANGER 영역 선택 방지
+7. HOME / Emergency Stop / Execute UI 연결
+8. 이후 임의 좌표와 카메라 기반 입력으로 확장
 
 ## 현재까지 검증한 좌표
 
@@ -42,7 +41,7 @@ HOME_ANGLES = [
 ]
 ```
 
-HOME에서 측정한 End-Effector 좌표는 다음과 같았습니다.
+HOME에서 측정한 End-Effector 좌표:
 
 ```python
 HOME_COORDS = [
@@ -83,86 +82,63 @@ PLACE_B = [
 ]
 ```
 
-A와 B의 Z 차이는 매트 높이 차이가 아니라 수동으로 위치를 기록하면서 생긴 오차입니다. 현재 B 높이에서도 Place 동작은 정상적으로 확인했습니다.
+A와 B의 Z 차이는 수동 위치 기록 과정에서 생긴 오차입니다. 현재 B 높이에서도 Place 동작은 정상적으로 확인했습니다.
 
 ## 안전 높이
-
-물체에 접근할 때 바로 XY 이동을 하지 않고, Pick/Place 지점 위쪽으로 먼저 이동한 뒤 수직으로 내려갑니다.
 
 ```python
 SAFE_HEIGHT = 70.0
 ```
 
-예를 들어 Pick A의 Z가 `110.4 mm`이면:
-
-```text
-PICK_A_ABOVE Z = 180.4 mm
-```
-
-입니다.
+Pick / Place 지점으로 바로 이동하지 않고 먼저 위쪽 안전 높이로 이동한 뒤 수직 접근합니다.
 
 ## 이동 모드
 
-`sync_send_coords(coords, speed, mode)`에서 이번 실습에서는 두 가지 모드를 사용했습니다.
+`sync_send_coords(coords, speed, mode)`에서:
 
-- `mode = 0`: angular 이동. HOME과 작업 영역 사이처럼 큰 이동에 사용
-- `mode = 1`: linear 이동. 물체 위에서 수직으로 접근하거나 들어 올릴 때 사용
-
-현재 기본 규칙은 다음과 같습니다.
-
-```text
-HOME -> A_ABOVE       mode 0
-A_ABOVE -> A          mode 1
-A -> A_ABOVE          mode 1
-A_ABOVE -> HOME       joint HOME movement
-HOME -> B_ABOVE       mode 0
-B_ABOVE -> B          mode 1
-B -> B_ABOVE          mode 1
-B_ABOVE -> HOME       joint HOME movement
-```
+- `mode = 0`: angular 이동. HOME과 작업 영역 사이의 큰 이동에 사용
+- `mode = 1`: linear 이동. 물체 접근 및 상승처럼 직선 이동이 필요한 구간에 사용
 
 ## 전체 Pick & Place 순서
 
-최종적으로 검증한 동작 순서는 다음과 같습니다.
-
 ```text
 HOME
   ↓
 Open Gripper
   ↓
-A_ABOVE
+START_ABOVE
   ↓
-A
+START
   ↓
 Close Gripper
   ↓
-A_ABOVE
+START_ABOVE
   ↓
 HOME
   ↓
-B_ABOVE
+GOAL_ABOVE
   ↓
-B
+GOAL
   ↓
 Open Gripper
   ↓
-B_ABOVE
+GOAL_ABOVE
   ↓
 HOME
 ```
 
-A에서 B로 바로 이동하지 않고 **물체를 잡은 상태에서도 HOME을 경유**하도록 구성했습니다. `move_home()`은 팔의 관절 자세만 변경하며 그리퍼 상태는 변경하지 않기 때문에 물체를 잡은 채 HOME을 거칠 수 있습니다.
+START에서 GOAL로 직접 이동하지 않고 **중간에 반드시 HOME을 경유**합니다. 현재 프로젝트에서는 이 경로 설계를 주요 안전 전략으로 사용합니다.
 
-## 로봇 XY 좌표 방향 확인
+## 로봇 XY 좌표 방향
 
-Pick A의 안전 높이에서 X와 Y를 각각 `+20 mm` 이동해 실제 방향을 확인했습니다.
+실제 이동 테스트 결과:
 
 ```text
 X +20 mm -> 로봇 기준 앞으로 이동
 Y +20 mm -> 로봇 기준 왼쪽으로 이동
 ```
 
-따라서 현재 설치 기준 좌표 방향은 다음과 같습니다.
+따라서 현재 설치 기준 좌표 방향은:
 
 ```text
                   +X
@@ -177,51 +153,157 @@ Y +20 mm -> 로봇 기준 왼쪽으로 이동
                 BACK
 ```
 
-이 방향을 이후 매트 UI의 화면 방향과 그대로 대응시킬 예정입니다.
+UI에서는 다음과 같이 대응합니다.
 
-## 파일 설명
+```text
+화면 위     = Robot X+
+화면 아래   = Robot X-
+화면 왼쪽   = Robot Y+
+화면 오른쪽 = Robot Y-
+```
 
-- `robot_state_check.py`: 현재 Joint angle과 Cartesian 좌표 확인
-- `robot_controller.py`: 로봇 연결 및 HOME 복귀 기본 클래스 실습
-- `point_recorder.py`: Servo를 풀고 수동으로 원하는 지점의 좌표 기록
-- `test_pick_lift.py`: Pick A에서 70 mm 수직 상승 테스트
-- `test_home_route.py`: Pick A 작업 영역과 HOME 사이 이동 경로 테스트
-- `test_pick.py`: 실제 물체 Pick 및 Lift 테스트
-- `test_release.py`: Pick A에 물체를 다시 내려놓는 Release 테스트
-- `test_place_position.py`: Place B의 수직 상승/하강 테스트
-- `test_xy_direction.py`: Robot X/Y 좌표의 실제 방향 확인
-- `pick_and_place.py`: 전체 Pick & Place 동작
+## Mat UI
+
+Tkinter 기반으로 400 × 400 mm 작업 매트를 표현했습니다.
+
+현재 기능:
+
+- START 선택
+- GOAL 선택
+- START 선택 후 자동으로 GOAL 모드 전환
+- 선택 좌표 Robot X/Y 표시
+- 마우스 Cursor X/Y 실시간 표시
+- Clear
+- Execute
+- HOME
+- EMERGENCY STOP
+
+## DANGER 영역
+
+로봇 베이스 실측 크기:
+
+```text
+좌우: 120 mm
+앞뒤: 150 mm
+```
+
+원점 `(0, 0)` 기준 선택 금지 영역:
+
+```text
+X: -75 ~ +75 mm
+Y: -60 ~ +60 mm
+```
+
+UI에서는 `DANGER`로 표시하고, 내부 코드에서는 `no_go` 영역으로 관리합니다.
+
+## 프로젝트 구조
+
+```text
+mycobot_pick_place/
+│
+├── mat_ui.py
+│   └── UI / START / GOAL / 버튼 처리
+│
+├── workspace.py
+│   └── Mat 범위 / DANGER 영역 / 좌표 유효성
+│
+├── coordinate_mapper.py
+│   └── UI pixel ↔ Robot X,Y 변환
+│
+├── robot_controller.py
+│   └── pymycobot 실제 제어
+│       - move_home()
+│       - move_to()
+│       - open_gripper()
+│       - close_gripper()
+│       - emergency_stop()
+│
+├── robot_worker.py
+│   └── Robot task를 별도 Thread에서 실행
+│       - 실행 상태 관리
+│       - stop_event 관리
+│
+└── pick_and_place.py
+    └── HOME 경유 Pick & Place 동작 순서
+```
+
+## Worker Thread와 Emergency Stop
+
+Tkinter UI가 로봇 동작 중 멈추지 않도록 실제 로봇 작업은 `robot_worker.py`의 별도 Thread에서 실행합니다.
+
+설치된 `pymycobot`에서 실제 정지 메서드를 확인했습니다.
+
+```python
+def stop(self):
+    """Stop moving"""
+    return self._mesg(ProtocolCode.STOP)
+```
+
+Emergency Stop은 두 가지를 함께 수행합니다.
+
+```text
+mc.stop()
+→ 현재 motion 정지
+
+stop_event.set()
+→ Pick & Place의 이후 명령 실행 차단
+```
+
+HOME과 Execute는 Worker Thread에서 실행하고, Emergency Stop 버튼은 UI가 계속 반응하는 상태에서 즉시 호출할 수 있도록 구성했습니다.
+
+## 경로 테스트에서 확인한 점
+
+공통 End-Effector orientation을 유지한 채 여러 점을 이동해보는 실험 중, X- 방향의 한 점에서 그리퍼가 로봇 본체와 충돌한 뒤 더 뒤로 이동하려는 동작이 발생해 즉시 중단했습니다.
+
+이 경험을 바탕으로 모든 좌표를 점 단위로 검증하는 방식보다, **작업점 위로 수직 상승한 뒤 HOME을 거쳐 다음 작업점으로 이동하는 경로를 강제**하는 방향으로 설계를 유지합니다.
+
+## 카메라 확장 고려
+
+현재는 로봇이 매트 중앙에 있지만, 향후 카메라가 전방만 보게 될 가능성을 고려해 **화면 범위와 로봇 좌표계를 분리**했습니다.
+
+```text
+UI / Camera
+    ↓
+Coordinate Mapper
+    ↓
+Robot X,Y
+    ↓
+Pick & Place
+    ↓
+Robot Controller
+```
+
+로봇 좌표계는 그대로 유지하고, 카메라 시야가 바뀌면 `workspace`의 표시 / 선택 범위만 변경할 수 있도록 확장할 예정입니다.
 
 ## 현재 완료 항목
 
-- [x] `pymycobot` 연결 확인
-- [x] `get_angles()` 확인
-- [x] `get_coords()` 확인
-- [x] HOME 자세 정의
-- [x] HOME 복귀 동작
-- [x] Pick A 좌표 기록
-- [x] Place B 좌표 기록
-- [x] Cartesian 이동
+- [x] `pymycobot` 연결
+- [x] `get_angles()` / `get_coords()` 확인
+- [x] HOME 자세 정의 및 복귀
+- [x] Pick A / Place B 좌표 기록
 - [x] Gripper Open / Close
-- [x] Pick A 수직 접근
-- [x] 물체 집기
-- [x] 물체 들어 올리기
-- [x] 물체 내려놓기
-- [x] HOME 경유 이동
-- [x] 전체 `HOME -> A -> HOME -> B -> HOME` 동작
-- [x] X/Y 좌표 방향 확인
+- [x] 수직 Pick / Lift / Release
+- [x] `HOME -> Pick -> HOME -> Place -> HOME` 동작
+- [x] Robot X/Y 실제 방향 확인
+- [x] 400 × 400 mm Mat UI
+- [x] START / GOAL 선택
+- [x] UI pixel → Robot X/Y 변환
+- [x] Cursor 좌표 실시간 표시
+- [x] Robot base DANGER 영역
+- [x] Execute 확인창
+- [x] HOME 버튼 실제 로봇 연결
+- [x] Robot Worker Thread 구조
+- [x] Emergency Stop 실제 동작 확인
+- [x] `mc.stop()` + `stop_event` 적용
+- [x] UI Execute → Pick & Place 실제 연결
+- [x] UI에서 A → B Pick & Place 성공
 
 ## 다음 진행
 
-다음 단계는 `mat_ui.py` 구현입니다.
+다음 단계에서는 UI의 임의 좌표를 실제 Pick / Place에 사용할 수 있도록 다음 항목을 정리합니다.
 
-1. 400 × 400 mm 매트를 Tkinter UI로 표현
-2. 화면 중앙에 로봇 위치 표시
-3. START 지점 선택
-4. GOAL 지점 선택
-5. UI 좌표를 Robot X/Y 좌표로 변환
-6. 실제 로봇을 움직이기 전에 좌표 변환 결과만 검증
-7. 접근 불가 영역 / 로봇 베이스 영역 설정
-8. 검증 후 `pick_and_place()`와 연결
-
-그 이후에는 ROS 2 Action 구조와 카메라 기반 물체 인식을 단계적으로 추가할 예정입니다.
+1. 평평한 매트에서 사용할 Pick / Place Z 기준
+2. 임의 X/Y에서 사용할 End-Effector orientation 정책
+3. 필요 시 workspace를 로봇 전방 또는 Camera visible area로 제한
+4. 이후 ROS 2 Action 구조로 확장
+5. 카메라 캘리브레이션 및 Camera → Robot 좌표 변환
