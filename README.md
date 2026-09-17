@@ -2,7 +2,7 @@
 
 Elephant Robotics **myCobot 280-Pi**에서 `pymycobot`을 사용해 매트 위의 물체를 집고 다른 위치로 옮기는 Pick & Place 프로젝트입니다.
 
-현재는 **400 × 400 mm 작업 매트 UI에서 START / GOAL을 선택하고, HOME 경유 Pick & Place를 실제 로봇에 실행하는 단계까지 완료**했습니다. Preview, Emergency Stop, 위치 기반 orientation 보정, USB 카메라 입력까지 확장한 상태입니다.
+현재는 **400 × 400 mm 작업 매트 UI, HOME 경유 Pick & Place, Preview, Emergency Stop, Worker Thread 구조까지 실제 로봇에서 검증**했으며, 비전 구조는 전면 고정 카메라 방식에서 **그리퍼 장착 Eye-in-Hand 카메라 기반 Visual Servo 방식**으로 변경했습니다.
 
 > 아래 좌표와 자세 값은 현재 실습 장비의 설치 상태에서 측정한 값입니다. 다른 장비나 설치 자세에서는 그대로 사용하면 안 됩니다.
 
@@ -12,9 +12,8 @@ Elephant Robotics **myCobot 280-Pi**에서 `pymycobot`을 사용해 매트 위�
 - ROS 2: Galactic
 - Robot control: `pymycobot`
 - UI: Tkinter
-- Camera: USB camera + OpenCV
+- Vision: USB camera + OpenCV
 - Work mat: 400 mm × 400 mm
-- Robot base: 매트 중앙 배치
 - Project path: `~/mycobot_pick_place`
 
 ## 현재 프로젝트 구조
@@ -22,21 +21,13 @@ Elephant Robotics **myCobot 280-Pi**에서 `pymycobot`을 사용해 매트 위�
 ```text
 mycobot_pick_place/
 ├── mat_ui.py
-│   └── START / GOAL / Preview / Execute / HOME / Emergency Stop
 ├── workspace.py
-│   └── Mat 범위 / DANGER 영역 / 좌표 유효성
 ├── coordinate_mapper.py
-│   └── UI pixel ↔ Robot X,Y
 ├── robot_controller.py
-│   └── pymycobot 실제 제어
 ├── robot_worker.py
-│   └── 별도 Thread / 실행 상태 / stop_event
 ├── pick_and_place.py
-│   └── HOME 경유 Pick & Place / 작업 pose 생성
 ├── camera_test.py
-│   └── USB 카메라 영상 확인
 └── dual_camera_test.py
-    └── USB 카메라 2대 동시 영상 확인
 ```
 
 ## 로봇 좌표계
@@ -61,7 +52,7 @@ X +20 mm -> 로봇 기준 앞으로 이동
 Y +20 mm -> 로봇 기준 왼쪽으로 이동
 ```
 
-UI에서는 다음과 같이 대응합니다.
+UI 대응:
 
 ```text
 화면 위     = Robot X+
@@ -71,8 +62,6 @@ UI에서는 다음과 같이 대응합니다.
 ```
 
 ## HOME
-
-현재 HOME 자세는 관절 상태를 보기 쉽게 다음과 같이 변경했습니다.
 
 ```python
 HOME_ANGLES = [
@@ -85,7 +74,7 @@ HOME_ANGLES = [
 ]
 ```
 
-새 HOME에서 측정한 End-Effector pose:
+측정된 HOME End-Effector pose:
 
 ```text
 X  = 77.3
@@ -96,33 +85,25 @@ Ry = -1.82
 Rz = -50.57
 ```
 
-HOME 복귀는 Cartesian pose가 아니라 `HOME_ANGLES`를 기준으로 수행합니다.
+HOME 복귀는 Cartesian pose가 아니라 `HOME_ANGLES` 기준으로 수행합니다.
 
 ## Pick & Place 작업 높이
-
-매트가 평평하므로 Pick / Place의 작업 높이를 하나로 통일했습니다.
 
 ```python
 MAT_Z = 106.0
 SAFE_HEIGHT = 70.0
 ```
 
-따라서 현재 매트 작업 기준은:
-
 ```text
 Pick / Place Z = 106 mm
 ABOVE Z        = 176 mm
 ```
 
-Preview와 Execute에서 모두 정상 동작을 확인했습니다.
-
-향후 매트 밖으로 작업 영역을 확장하면 해당 영역은 매트보다 약 10 mm 낮으므로 별도의 작업 Z(약 96 mm)를 적용할 예정입니다.
+Preview와 Execute에서 정상 동작을 확인했습니다.
 
 ## End-Effector orientation
 
-현재는 모든 위치에 동일한 orientation을 강제로 적용하지 않고, **Rx / Ry는 기본 자세를 유지하고 Rz는 로봇 원점 기준 작업 위치에 따라 변경**하는 방향으로 구성했습니다.
-
-기준값:
+현재 Pick & Place에서는 Rx / Ry를 기본 자세로 유지하고, Rz는 작업 위치에 따라 계산하는 구조를 사용합니다.
 
 ```python
 BASE_RX = -178.31
@@ -133,17 +114,8 @@ REFERENCE_Y = -29.2
 REFERENCE_RZ = -52.13
 ```
 
-작업 위치 `(x, y)`의 방향을:
-
 ```python
 target_angle = math.degrees(math.atan2(y, x))
-```
-
-으로 계산하고, 기준점과의 각도 차이를 `Rz`에 반영합니다.
-
-계산된 `Rz`는 다음 식으로 `-180° ~ +180°` 범위에 정규화합니다.
-
-```python
 rz = (rz + 180) % 360 - 180
 ```
 
@@ -177,129 +149,43 @@ HOME
 
 START에서 GOAL로 직접 이동하지 않고 **중간에 반드시 HOME을 경유**합니다.
 
-## 이동 모드
-
-`sync_send_coords(coords, speed, mode)`에서:
-
-- `mode = 0`: angular 이동. HOME과 작업 영역 사이의 큰 이동
-- `mode = 1`: linear 이동. 물체 접근 / 상승처럼 직선 이동이 필요한 구간
-
-로봇 동작 사이의 불필요한 대기시간을 줄이기 위해 `time.sleep()` 값도 조정했습니다. `sync_send_coords()`처럼 완료를 기다리는 API 뒤의 추가 대기는 최소화하는 방향으로 정리했습니다.
-
 ## Mat UI
-
-Tkinter 기반으로 400 × 400 mm 작업 매트를 표현했습니다.
 
 현재 기능:
 
-- Select START
-- Select GOAL
-- Preview START
-- Preview GOAL
+- Select START / GOAL
+- Preview START / GOAL
 - Clear
 - Execute
 - HOME
-- EMERGENCY STOP
-- 선택 좌표 Robot X/Y 표시
-- Cursor Robot X/Y 실시간 표시
+- Emergency Stop
+- Cursor Robot X/Y 표시
 - DANGER 영역 선택 방지
 
-버튼은 기능별로 두 줄로 분리했습니다.
-
-```text
-Select START | Select GOAL | Preview START | Preview GOAL | Clear
-Execute | HOME | EMERGENCY STOP
-```
-
-## Preview
-
-UI에서 선택한 좌표가 실제 매트의 어느 위치인지 실행 전에 확인하기 위해 Preview 기능을 추가했습니다.
-
-```text
-HOME
- ↓
-START_ABOVE 또는 GOAL_ABOVE
- ↓
-해당 위치에서 정지
-```
-
-실제 Pick / Place 높이까지 내려가지 않고 ABOVE 위치까지만 이동합니다. Preview 역시 `RobotWorker`에서 실행하므로 이동 중 UI와 Emergency Stop을 계속 사용할 수 있습니다.
-
-## DANGER 영역
-
-로봇 베이스 실측 크기:
-
-```text
-좌우: 120 mm
-앞뒤: 150 mm
-```
-
-원점 `(0, 0)` 기준 선택 금지 영역:
+DANGER 영역:
 
 ```text
 X: -75 ~ +75 mm
 Y: -60 ~ +60 mm
 ```
 
-UI에서는 `DANGER`로 표시하고 내부 코드에서는 `no_go` 영역으로 관리합니다.
+## RobotWorker / Emergency Stop
 
-## Worker Thread / Emergency Stop
-
-Tkinter UI가 로봇 동작 중 멈추지 않도록 실제 로봇 작업은 `robot_worker.py`의 별도 Thread에서 실행합니다.
-
-Emergency Stop은 두 동작을 함께 수행합니다.
+로봇 동작 중 UI가 멈추지 않도록 실제 motion은 `robot_worker.py`의 별도 Thread에서 실행합니다.
 
 ```text
 mc.stop()
 → 현재 motion 정지
 
 stop_event.set()
-→ Pick & Place의 이후 명령 차단
+→ 이후 motion 명령 차단
 ```
 
-HOME / Preview / Execute는 Worker Thread에서 실행하고 Emergency Stop은 UI에서 즉시 호출할 수 있도록 구성했습니다.
+HOME / Preview / Execute도 Worker Thread를 통해 실행합니다.
 
-## 카메라 구조
+## USB 카메라 확인
 
-카메라는 로봇 상단 수직 시점이 아니라 **로봇 하단에서 정면 작업 영역을 바라보도록 설치**되어 있습니다.
-
-따라서 전체 매트를 무조건 하나의 화면으로 가정하지 않고 Camera-visible workspace를 별도로 다루는 방향으로 설계합니다.
-
-```text
-Camera
-  ↓
-Object position / pixel
-  ↓
-Camera pixel (u, v)
-  ↓
-Camera → Robot calibration
-  ↓
-Robot X,Y
-  ↓
-Preview / Pick & Place
-```
-
-카메라 영상의 pixel 좌표계:
-
-```text
-(0,0) ─────────→ +u
-  |
-  |
-  ↓
- +v
-```
-
-## USB 카메라 연결
-
-OpenCV로 USB 카메라 실시간 영상 출력을 확인했습니다.
-
-```python
-camera = cv2.VideoCapture(0)
-```
-
-또한 두 USB 카메라를 동시에 연결해 정상 영상을 확인했습니다.
-
-`v4l2-ctl --list-devices` 결과:
+두 USB 카메라 입력을 확인했습니다.
 
 ```text
 PC CAMERA 1
@@ -311,38 +197,159 @@ USB2.0 PC CAMERA
 └── /dev/video3
 ```
 
-`/dev/video10~16`은 Raspberry Pi codec / ISP 장치이므로 USB 카메라 입력과 구분합니다.
-
-두 물리 카메라는 다음 조합으로 동시에 열었습니다.
+두 물리 카메라는 다음 조합으로 동시에 열 수 있었습니다.
 
 ```python
 camera0 = cv2.VideoCapture(0)
 camera1 = cv2.VideoCapture(2)
 ```
 
-## Camera → Robot 캘리브레이션 계획
+## 2026-09-17 - Camera calibration 실험
 
-물리적인 기준 마커 여러 개를 계속 배치하는 대신 **동일한 마커 하나를 카메라 시야 안의 여러 Robot X/Y 위치로 옮기면서 데이터**를 수집하기로 했습니다.
+### ChArUco intrinsic calibration
 
-각 위치에서:
-
-```text
-Robot (X, Y) ↔ Camera (u, v)
-```
-
-좌표쌍을 수집합니다.
-
-카메라가 하단 전면 시점이므로 단순한 `1 pixel = n mm` 변환은 원근 오차가 생길 수 있습니다. 따라서 여러 좌표쌍으로 평면 Homography를 계산해 Camera pixel을 Robot X/Y로 변환할 예정입니다.
+Camera intrinsic calibration에 사용한 보드:
 
 ```text
-Camera (u,v)
-    ↓
-Homography
-    ↓
-Robot (X,Y)
+Board          = 5 x 7 squares
+Dictionary     = DICT_6X6_50
+Square length  = 31 mm
+Marker length  = 19 mm
+OpenCV         = 4.6.0
 ```
 
-카메라가 고정되어 있으면 계산된 변환 행렬을 저장해 재사용할 수 있습니다.
+`aruco.calibrateCameraCharuco()`에서 segmentation fault가 발생해 ChArUco detection 결과를 `cv2.calibrateCamera()`에 전달하는 방식으로 우회했고, intrinsic calibration에 성공했습니다.
+
+결과는 다음 파일에 저장했습니다.
+
+```text
+camera1_intrinsics.npz
+```
+
+### Gripper ArUco
+
+그리퍼에 부착한 기준 마커:
+
+```text
+Dictionary = DICT_6X6_50
+ID         = 0
+Size       = 25 x 25 mm
+```
+
+부착 위치:
+
+```text
+Gripper bottom
+     ↑ 75 mm
+ArUco black square bottom
+     ↑ 12.5 mm
+ArUco center
+```
+
+따라서 그리퍼 최하단에서 ArUco 중심까지는 `87.5 mm`입니다.
+
+25 mm 마커 거리 테스트:
+
+```text
+Actual(mm)   Raw Zc(mm)
+300          700
+250          570
+200          450
+150          325
+100          210
+70           145
+```
+
+현재 장비 기준 경험적 Z 보정식:
+
+```python
+corrected_z = 0.41376 * camera_z + 12.83
+```
+
+이 값은 현재 카메라 / 해상도 / intrinsic / 25 mm marker 조합에 대한 실측 보정값입니다.
+
+### Camera ↔ Robot calibration 실험
+
+고정 카메라에서 그리퍼 ArUco를 관찰하며 Camera pose와 Robot TCP pose를 대응시키는 실험을 진행했습니다.
+
+캘리브레이션 중에는 Pick & Place와 비슷하게 Z / Rx / Ry / Rz를 고정하고 X/Y만 이동하도록 구성했습니다.
+
+시작 pose 후보:
+
+```text
+X = 243
+Y = -5
+Z = 176
+```
+
+로봇 이동 시 카메라 영상이 멈추는 문제는 `robot.move_to()`가 OpenCV loop와 같은 thread에서 blocking되기 때문으로 확인했습니다. 기존 `RobotWorker`를 재사용해 robot motion과 camera loop를 분리하는 방향으로 정리했습니다.
+
+## 비전 구조 변경
+
+로봇팔의 실제 가동 범위를 고려한 결과, **전면을 바라보는 고정 Camera 1을 메인 카메라로 사용하는 계획은 철회**했습니다.
+
+따라서 기존의:
+
+```text
+Fixed Camera
+→ Camera to Robot global calibration
+→ Object global XY
+→ Robot move
+```
+
+구조는 더 이상 메인 설계로 사용하지 않습니다.
+
+Camera 1에서 수행한 intrinsic / ArUco / 거리 측정 결과는 참고용으로 보존합니다.
+
+## 새 메인 구조: Eye-in-Hand Gripper Camera
+
+Camera 2를 그리퍼에 장착하고 **그리퍼가 바라보는 방향을 보는 메인 카메라**로 사용합니다.
+
+```text
+HOME
+ ↓
+SEARCH POSE
+ ↓
+Gripper Camera
+ ↓
+Object Detection
+ ↓
+Visual Servo X/Y
+ ↓
+Descend
+ ↓
+Visual Servo X/Y
+ ↓
+Pick
+ ↓
+Lift
+ ↓
+HOME
+ ↓
+GOAL
+ ↓
+Place
+```
+
+영상 중심과 물체 중심의 pixel error를 계산합니다.
+
+```python
+error_x = object_x - image_center_x
+error_y = object_y - image_center_y
+```
+
+그 오차를 이용해 작은 X/Y 이동을 반복하고, 한 번에 Pick 높이까지 내려가지 않고 단계적으로 하강하면서 재정렬하는 Visual Servo 구조로 개발할 예정입니다.
+
+## UI 방향
+
+향후 START는 사용자가 직접 좌표로 선택하는 대신 비전이 찾아낸 물체로 대체할 예정입니다.
+
+```text
+START = Gripper Camera가 찾은 물체
+GOAL  = 사용자가 지정한 위치
+```
+
+기존 HOME 경유 Pick & Place 구조는 유지합니다.
 
 ## 현재 완료 항목
 
@@ -356,22 +363,24 @@ Robot (X,Y)
 - [x] UI pixel → Robot X/Y 변환
 - [x] Robot base DANGER 영역
 - [x] Worker Thread 구조
-- [x] Emergency Stop (`mc.stop()` + `stop_event`)
-- [x] UI Execute → 실제 Pick & Place
+- [x] Emergency Stop
 - [x] Preview START / GOAL
 - [x] 매트 작업 Z = 106 mm 적용
-- [x] 새 HOME 자세 적용 / pose 측정
 - [x] 위치 기반 Rz 계산 구조
-- [x] Rz `-180° ~ +180°` 정규화
-- [x] USB 카메라 1대 OpenCV 입력
-- [x] USB 카메라 2대 동시 입력 (`/dev/video0`, `/dev/video2`)
+- [x] USB 카메라 2대 입력 확인
+- [x] ChArUco intrinsic calibration
+- [x] 25 mm gripper ArUco 거리 측정
+- [x] 고정 Camera 1 방식의 한계 확인
+- [x] Eye-in-Hand Camera 2 구조로 설계 변경
 
 ## 다음 진행
 
-1. Pick & Place에 사용할 메인 카메라 선정
-2. 동일한 기준 마커를 여러 Robot X/Y 위치에 놓고 `(u,v) ↔ (X,Y)` 데이터 수집
-3. Homography 계산 및 저장
-4. Camera pixel → Robot X/Y 변환 검증
-5. 변환된 좌표를 Preview에 연결해 실제 위치 확인
-6. 물체 검출 결과를 Pick 좌표로 연결
-7. 이후 ROS 2 Action 구조로 확장
+1. Camera 2를 그리퍼에 고정 장착하고 시야 방향 확인
+2. `gripper_camera_test.py` 작성
+3. 영상 중앙 crosshair 표시
+4. 물체 중심점 검출 및 `dx / dy` pixel error 표시
+5. Camera 화면 방향과 Robot X/Y 이동 방향 매핑 확인
+6. 작은 incremental X/Y Visual Servo 구현
+7. 단계적 Z 하강 + 재정렬 구현
+8. Pick → HOME → GOAL → Place 흐름에 연결
+9. 이후 ROS 2 Action 구조로 확장
